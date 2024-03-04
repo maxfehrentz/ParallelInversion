@@ -140,6 +140,7 @@ public:
 		return m_density_network->padded_output_width();
 	}
 
+	// This method is only used for the training of the network, the actual output is computed in the forward() method
 	std::unique_ptr<tcnn::Context> forward_impl(cudaStream_t stream, const tcnn::GPUMatrixDynamic<float>& input, tcnn::GPUMatrixDynamic<T>* output = nullptr, bool use_inference_params = false, bool prepare_input_gradients = false) override {
 		// Make sure our temporary buffers have the correct size for the given batch size
 		uint32_t batch_size = input.n();
@@ -149,6 +150,8 @@ public:
 		forward->density_network_input = tcnn::GPUMatrixDynamic<T>{m_pos_encoding->padded_output_width(), batch_size, stream, m_pos_encoding->preferred_output_layout()};
 		forward->rgb_network_input = tcnn::GPUMatrixDynamic<T>{m_rgb_network_input_width, batch_size, stream, m_dir_encoding->preferred_output_layout()};
 
+		// m_pos_encoding->forward() returns the context of the pos encoding network
+		// pos_encoding_ctx is used to compute the density network input
 		forward->pos_encoding_ctx = m_pos_encoding->forward(
 			stream,
 			input.slice_rows(0, m_pos_encoding->input_width()),
@@ -157,10 +160,17 @@ public:
 			prepare_input_gradients
 		);
 
+		// density_network_output is a view into rgb_network_input because the density network output is the first part of the rgb network input
+		// Where does rgb_network_input come from? It is a member of the ForwardContext struct, but it is not initialized yet
 		forward->density_network_output = forward->rgb_network_input.slice_rows(0, m_density_network->padded_output_width());
+
+		// density_network_ctx is used to compute the density network output
 		forward->density_network_ctx = m_density_network->forward(stream, forward->density_network_input, &forward->density_network_output, use_inference_params, prepare_input_gradients);
 
+		// dir_out is a view into rgb_network_input because the dir encoding output is the second part of the rgb network input
 		auto dir_out = forward->rgb_network_input.slice_rows(m_density_network->padded_output_width(), m_dir_encoding->padded_output_width());
+
+		// dir_encoding_ctx is used to compute the dir encoding output
 		forward->dir_encoding_ctx = m_dir_encoding->forward(
 			stream,
 			input.slice_rows(m_dir_offset, m_dir_encoding->input_width()),
@@ -169,12 +179,24 @@ public:
 			prepare_input_gradients
 		);
 
+		// Where does output come from? It is a parameter of the forward_impl function, computed somewhere else
 		if (output) {
+			// rgb_network_output is a view into output because the rgb network output is the last part of the output
 			forward->rgb_network_output = tcnn::GPUMatrixDynamic<T>{output->data(), m_rgb_network->padded_output_width(), batch_size, output->layout()};
 		}
 
+		// rgb_network_ctx is used to compute the rgb network output
 		forward->rgb_network_ctx = m_rgb_network->forward(stream, forward->rgb_network_input, output ? &forward->rgb_network_output : nullptr, use_inference_params, prepare_input_gradients);
 
+		// 1. extract_density<T> is a function that is called for every element of the density network output
+		// 2. 0 is the initial value of the accumulator
+		// 3. stream is the cuda stream
+		// 4. batch_size is the number of samples in the batch
+		// 5. density_network_output.stride() is the stride of the density network output
+		// 6. padded_output_width() is the width of the density network output
+		// 7. density_network_output.data() is the pointer to the data of the density network output
+		// 8. output->data()+3 is the pointer to the data of the output, but shifted by 3 elements
+		//    Why is it shifted by 3 elements? Because the first 3 elements of the output are the density network output		
 		if (output) {
 			tcnn::linear_kernel(extract_density<T>, 0, stream,
 				batch_size, m_dir_encoding->preferred_output_layout() == tcnn::AoS ? forward->density_network_output.stride() : 1, padded_output_width(), forward->density_network_output.data(), output->data()+3
@@ -243,6 +265,7 @@ public:
 			dL_ddensity_network_input = tcnn::GPUMatrixDynamic<T>{m_pos_encoding->padded_output_width(), batch_size, stream, m_pos_encoding->preferred_output_layout()};
 		}
 
+		// TODO: Commenting out this line will make the network not learn the density network?
 		m_density_network->backward(stream, *forward.density_network_ctx, forward.density_network_input, forward.density_network_output, dL_ddensity_network_output, dL_ddensity_network_input.data() ? &dL_ddensity_network_input : nullptr, use_inference_params, param_gradients_mode);
 
 		// Backprop through pos encoding if it is trainable or if we need input gradients

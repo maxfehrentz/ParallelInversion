@@ -112,6 +112,28 @@ inline __device__ Array3f copysign(const Array3f& a, const Array3f& b) {
 	};
 }
 
+// inline __device__ float calculate_ncc(const Array3f& x, const Array3f& y) {
+//     float mean_x = x.mean();
+//     float mean_y = y.mean();
+
+//     Array3f numerator = (x - mean_x) * (y - mean_y);
+//     Array3f denominator_x = (x - mean_x).square();
+//     Array3f denominator_y = (y - mean_y).square();
+
+//     return numerator.sum() / (sqrt(denominator_x.sum() * denominator_y.sum()) + 1e-8f);
+// }
+
+// inline_device_ LossAndGradient ncc_loss(const Array3f& target, const Array3f& prediction) {
+//     float ncc = calculate_ncc(target, prediction);
+//     float loss_value = 1.0f - ncc;
+
+//     // Simplified gradient computation. A full implementation would require
+//     // partial derivatives of the NCC formula with respect to the prediction.
+//     Array3f grad_ncc = ...; // Calculate the gradient here
+
+//     return {Eigen::Array3f::Constant(loss_value), grad_ncc};
+// }
+
 inline __device__ LossAndGradient l2_loss(const Array3f& target, const Array3f& prediction) {
 	Array3f difference = prediction - target;
 	return {
@@ -1536,6 +1558,8 @@ __global__ void compute_loss_kernel_train_nerf(
 			break;
 		}
 
+		// It seems that local_network_output is a 4D vector, and the first 3 elements are the RGB color, and the last one is the density.
+		// The original networks (for density and color) are defined in nerf_network.h
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const Array3f rgb = network_to_rgb(local_network_output, rgb_activation);
 		const Vector3f pos = unwarp_position(coords_in.ptr->pos.p, aabb);
@@ -1645,7 +1669,15 @@ __global__ void compute_loss_kernel_train_nerf(
 
 	dloss_doutput += compacted_base * padded_output_width;
 
+	// rgbtarget is the target color, rgb_ray is the predicted color
+	// rgbtarget is computed by compositing the target image with the background color
+	// rbg_ray is computed by compositing the predicted image with the background color
 	LossAndGradient lg = loss_and_gradient(rgbtarget, rgb_ray, loss_type);
+
+	// Note: we divide by the PDF here to get an unbiased estimate of the loss. We do that because we are not using the
+	// loss for optimization, but only for logging. If we were to use the loss for optimization, we would not divide by the PDF.
+	// The img_pdf is the PDF of the image, which is 1.0f / n_training_images. The xy_pdf is the PDF of the pixel, which is 1.0f / resolution.
+	// That means we divide the loss by n_training_images * resolution.
 	lg.loss /= img_pdf * xy_pdf;
 
 	float target_depth = rays_in_unnormalized[i].d.norm() * ((depth_supervision_lambda > 0.0f && metadata[img].depth) ? read_depth(xy, resolution, metadata[img].depth) : -1.0f);
@@ -4130,7 +4162,7 @@ int Testbed::marching_cubes(Vector3i res3d, const BoundingBox& aabb, const Matri
 	return (int)(m_mesh.indices.size()/3);
 }
 
-uint8_t* Testbed::Nerf::get_density_grid_bitfield_mip(uint32_t mip) {
+uint8_t* Testbed::Nerf::get_density_grid_bitfield_mip(uint32_t mip) { 
 	return density_grid_bitfield.data() + grid_mip_offset(mip)/8;
 }
 

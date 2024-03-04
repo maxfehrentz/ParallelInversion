@@ -31,6 +31,24 @@ def nerf_llff(name, frameidx):
 		"frameidx"      : frameidx
 	}
 
+def MICCAI_hypernet(name, frameidx):
+	return {
+		"data_dir"      : f"/home/maximilian_fehrentz/Documents/MICCAI/{name}/data/ngp",
+		"dataset_train" : "transforms.json",
+		"dataset_test"  : "transforms.json",
+		"dataset"       : "",
+		"frameidx"      : frameidx
+	}
+
+def MICCAI_mri(name, frameidx):
+	return {
+		"data_dir"      : f"/home/maximilian_fehrentz/Documents/MICCAI/{name}/data/ngp_mri",
+		"dataset_train" : "transforms.json",
+		"dataset_test"  : "transforms.json",
+		"dataset"       : "",
+		"frameidx"      : frameidx
+	}
+
 # Some official dataset
 scenes_nerf = {
 	# nerf synthetic
@@ -52,5 +70,21 @@ scenes_nerf = {
 	"orchids" : nerf_llff("orchids", frameidx=0),
 	"room" : nerf_llff("room", frameidx=0),
 	"trex" : nerf_llff("trex", frameidx=0),
+
+	# MICCAI cases
+	"case003": MICCAI_hypernet("003", frameidx=0),
+	"case003_mri": MICCAI_mri("003", frameidx=0),
+
+	"case065": MICCAI_hypernet("065", frameidx=0),
+	"case065_mri": MICCAI_mri("065", frameidx=0),
+
+	"case089": MICCAI_hypernet("089", frameidx=0),
+	"case089_mri": MICCAI_mri("089", frameidx=0),
+
+	"case207": MICCAI_hypernet("207", frameidx=0),
+	"case207_mri": MICCAI_mri("207", frameidx=0),
+
+	"case209": MICCAI_hypernet("209", frameidx=0),
+	"case209_mri": MICCAI_mri("209", frameidx=0),
 }
 

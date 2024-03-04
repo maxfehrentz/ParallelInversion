@@ -1,0 +1,62 @@
+# MICCAI setup
+#Identifier
+dataset_name: "MICCAI_mri"
+load_snapshot: '/home/maximilian_fehrentz/Documents/MICCAI/089/data/ngp_mri/model.msgpack'
+#Target
+scene: 'case089_mri'
+# Init
+START_FROM_NOISY_GT: True
+delta_rot_range_start: 15
+delta_trans_range_start: 0.25
+#Optimization params
+n_camera_samples: 64
+n_steps_pose_optimization: 5000
+n_steps_first_reinitialization: 5000
+delta_rot_range: 25
+delta_trans_range: 0.3
+# Loss
+loss_type: 'RelativeL2'
+# Debug
+screenshot_dir: 'screenshots_089_mri'
+
+
+#Model registration
+network: '/../configs/nerf/hashgrid.json'
+train: False
+gui: False
+#save_snapshot: 'model.msgpack'
+#n_steps: 2000
+#render_aabb_scale: 1
+
+#Hyperparameters
+extrinsic_learning_rate: 0.003 # 0.001 by default
+extrinsic_learning_rate_rot: 0.005 # 0.001 by default
+extrinsic_learning_rate_base_step: 256 # 128 by default
+reg_weight: 0.0001
+n_steps_between_cam_updates: 4
+n_steps_between_error_map_updates: 128
+n_steps_between_reinitialization: 512
+reinitialize_top_ratio: 0.25
+delta_rot_range_resample: 10
+delta_trans_range_resample: 0.5
+
+#Ablation
+train_cam_with_segmented_bg: True
+reinitialize_cam_poses: True
+
+##Rendering related
+single_view_experiment: True
+see_from_best_view: True
+# exp_idx_choice: 12
+n_steps_between_screenshot: 250
+n_steps_between_log: 20
+rendering_bg_white: True
+
+#Debug related
+POSE_ESTIMATION_ONLY: True # enable it when you are certain that the model has been trained to skip double-check
+#GUI_ENABLED: True
+random_seed: 1234
+
+#For testing
+BULK_EXP: True
+verbose: True

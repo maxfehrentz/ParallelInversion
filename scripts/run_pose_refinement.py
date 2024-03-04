@@ -19,6 +19,8 @@ from tqdm import tqdm
 
 import pyngp as ngp  # noqa
 
+import os
+
 import cv2
 import skimage
 from utils.utils import show_img, OpenCV2NeRF, to8b, \
@@ -30,6 +32,8 @@ from pathlib import Path
 
 import configargparse
 import yaml
+
+import numpy as np
 
 def config_parser():
 	parser = configargparse.ArgumentParser(
@@ -55,7 +59,7 @@ def config_parser():
 						help="Resolution height of GUI and screenshots.")
 
 	# Identifier
-	parser.add_argument("--dataset_name", default="nerf_synthetic", choices=["nerf_synthetic", "nerf_llff"],
+	parser.add_argument("--dataset_name", default="nerf_synthetic", choices=["nerf_synthetic", "nerf_llff", "MICCAI_hypernet", "MICCAI_mri"],
 						help="set up the dataset name to determine how to convert the final metric.")
 
 	# Model registration
@@ -466,7 +470,164 @@ def load_basic_info(meta_training, args):
 					print('GT pose: ', transform_matrix_gt)
 				break
 
-		assert transform_matrix_gt is not None, "No GT pose found"
+		print(f"type of transform_matrix_get is {type(transform_matrix_gt)}")
+
+
+		# assert transform_matrix_gt is not None, "No GT pose found"
+
+		# TODO: remove that later, just using a hardcoded transform_matrix for images with unknown target pose
+		#  because PI relies on it to create guesses
+
+		# # for 003, gt
+		# transform_matrix_gt = np.array(
+		# 	[
+		# 		[
+		# 			0.726448886334637,
+		# 			0.6491976786647358,
+		# 			-0.22542047280467714,
+		# 			-0.6747694501005268
+		# 		],
+		# 		[
+		# 			0.2676034000417436,
+		# 			0.034899209047931784,
+		# 			0.9628969132227642,
+		# 			-0.7162451691996023
+		# 		],
+		# 		[
+		# 			0.632977437061752,
+		# 			-0.7598186752272856,
+		# 			-0.14837501456306088,
+		# 			0.35476425101161296
+		# 		],
+		# 		[
+		# 			0.0,
+		# 			0.0,
+		# 			0.0,
+		# 			1.0
+		# 		]
+		# 	]
+		# )
+
+		# 065 gt
+		transform_matrix_gt = np.array(
+			[
+				[
+					0.9399469149617992,
+					0.19982986593439278,
+					-0.2767089115558787,
+					-0.15420574880826937
+				],
+				[
+					0.34068074043063845,
+					-0.499650487294187,
+					0.7964207579202802,
+					-0.8379691002231562
+				],
+				[
+					0.020890910785038186,
+					-0.8428626312913181,
+					-0.5377231207780148,
+					0.9153994598405331
+				],
+				[
+					0.0,
+					0.0,
+					0.0,
+					1.0
+				]
+			]
+		)
+
+		# # 089 gt
+		# transform_matrix_gt = np.array(
+		# 	[
+		# 		[
+		# 			0.8136978457276838,
+		# 			-0.5348531646711241,
+		# 			0.22765743585354245,
+		# 			-0.08019269796579342
+		# 		],
+		# 		[
+		# 			-0.4296589561056278,
+		# 			-0.8171872221656526,
+		# 			-0.3841851446469611,
+		# 			0.5197253281829308
+		# 		],
+		# 		[
+		# 			0.39152138804457226,
+		# 			0.21479556832129382,
+		# 			-0.8947479346347685,
+		# 			0.20128611958752296
+		# 		],
+		# 		[
+		# 			0.0,
+		# 			0.0,
+		# 			0.0,
+		# 			1.0
+		# 		]
+		# 	]
+		# )
+
+		# # 207, gt
+		# transform_matrix_gt = np.array(
+		# 	[
+		# 		[
+		# 			-0.3549699541387402,
+		# 			-0.07159674620344393,
+		# 			0.9321320923516262,
+		# 			0.6726487778226686
+		# 		],
+		# 		[
+		# 			0.7689591201128719,
+		# 			0.5447001255994338,
+		# 			0.3346694559818677,
+		# 			-0.02319882135521603
+		# 		],
+		# 		[
+		# 			-0.5316937118811721,
+		# 			0.8355690750051975,
+		# 			-0.13829720763985212,
+		# 			0.015853566135062502
+		# 		],
+		# 		[
+		# 			0.0,
+		# 			0.0,
+		# 			0.0,
+		# 			1.0
+		# 		]
+		# 	]
+		# )
+
+	# 	# for 209, gt
+	# 	transform_matrix_gt = np.array([
+	# 	[
+	# 		-0.7618298303116643,
+	# 		-0.39182607651264706,
+	# 		-0.5158368302205709,
+	# 		-1.5481917902008835
+	# 	],
+	# 	[
+	# 		0.12367844122531027,
+	# 		0.6936872978963645,
+	# 		-0.7095784494425672,
+	# 		1.9914301860358865
+	# 	],
+	# 	[
+	# 		0.6358607967341424,
+	# 		-0.6043759248199301,
+	# 		-0.48001123807123086,
+	# 		0.1914350119317437
+	# 	],
+	# 	[
+	# 		0.0,
+	# 		0.0,
+	# 		0.0,
+	# 		1.0
+	# 	]
+	# ])
+
+
+		K = None
 
 		meta_optimization = {
 			"K": K, # for evaluation
@@ -497,6 +658,28 @@ def load_target_view(meta_optimization, args):
 
 	# Load the target view
 
+	# TODO: remove, only for debugging of target image that has very different dimensions than NeRF training data
+	# Load the image
+	image = cv2.imread(args.target_filename)
+	# Define the new size
+	# # Case 3 Real
+	# new_size = (1990, 1990)
+	# # Case 3 St
+	# new_size = (1874, 1874)
+	# Case 207 (and all other mesh data)
+	new_size = (512, 512)
+	# Resize the image
+	resized_image = cv2.resize(image, new_size, interpolation=cv2.INTER_LINEAR)
+	# Split the file path into directory, file name, and extension
+	dir_name, file_name = os.path.split(args.target_filename)
+	file_base, file_extension = os.path.splitext(file_name)
+	# Create a new file name by adding '_resized' before the file extension
+	new_file_name = f"{file_base}_resized{file_extension}"
+	# Create the full path for the new file
+	new_file_path = os.path.join(dir_name, new_file_name)
+	cv2.imwrite(new_file_path, resized_image)
+	args.target_filename = new_file_path
+
 	# We assume the target image has been processed to get the segmented part
 	# Note that we MUST use read_image to get the right format
 
@@ -506,11 +689,12 @@ def load_target_view(meta_optimization, args):
 	if obs_img.shape[2] !=4:
 		obs_img = np.concatenate([obs_img, np.ones([obs_img.shape[0], obs_img.shape[1], 1])], axis=2)
 
-	if args.verbose:
-		display_img = deepcopy(obs_img)
-		display_img[..., 0:3] = linear_to_srgb(display_img[..., 0:3])
-
-		show_img("Original Observed image", display_img)
+	# TODO: this causes crash because of some depth issue
+	# if args.verbose:
+	# 	display_img = deepcopy(obs_img)
+	# 	display_img[..., 0:3] = linear_to_srgb(display_img[..., 0:3])
+	#
+	# 	show_img("Original Observed image", display_img)
 
 	if args.noise is not None or args.delta_brightness != 0 or args.random_maskout:
 
@@ -819,6 +1003,7 @@ def main(args):
 	target_image = load_target_view(meta_optimization, args)
 
 	# Restart for pose optimization
+	print(f"mode is {mode}")
 	testbed = ngp.Testbed(mode)
 	testbed.shall_train = True
 	testbed.nerf.sharpen = float(args.sharpen)
@@ -1040,7 +1225,7 @@ def main(args):
 						print(f'Translation error: {error_translation}/converted({error_translation/meta_optimization["scale_ratio_train"]})')
 
 						# Currently, we only support these two exps
-						if args.dataset_name == "nerf_synthetic" or args.dataset_name == "nerf_llff":
+						if args.dataset_name == "nerf_synthetic" or args.dataset_name == "nerf_llff" or args.dataset_name == "MICCAI_hypernet" or args.dataset_name == "MICCAI_mri":
 
 							if args.BULK_EXP:
 								# Return error_rotation, error_translation (converted) and meta_optimization
@@ -1142,7 +1327,7 @@ def run_exp(args):
 	# Enable GUI
 	# args.GUI_ENABLED = False
 
-	if args.dataset_name == "nerf_synthetic" or args.dataset_name == "nerf_llff":
+	if args.dataset_name == "nerf_synthetic" or args.dataset_name == "nerf_llff" or args.dataset_name == "MICCAI_hypernet" or args.dataset_name == "MICCAI_mri":
 
 		# Use the default target_json instead
 		args.target_json = ""
@@ -1166,6 +1351,44 @@ def run_exp(args):
 		obj_img_size = 5
 		pose_init_size = 5
 
+		# TODO: remove later, only for debugging, interested in 1 test image only
+		if args.dataset_name == "MICCAI_hypernet" or args.dataset_name == "MICCAI_mri":
+			obj_img_size = 1
+			pose_init_size = 1
+
+			# # Image from NeRF training set
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/images/0005.jpg"
+
+			# Image not from NeRF training set with different resolution, aspect ratio, and slightly different appearance
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/vrs_nazim/100/400_output_mr.png"
+
+			# From training set but light appearance
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/appearance/0005_light.jpg"
+
+			# From training but dark appearance
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/appearance/0005_dark.jpg"
+
+			# From training but cropped
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/cropped/0005.jpg"
+
+			# From training but occluded
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/occluded/0005_black_rect.jpg"
+		
+			# # 003
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/003/data/target_adjusted.png"
+
+			# 065
+			args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/065/data/065_cam_adjusted.png"
+
+			# # 089
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/089/data/target_adjusted.png"
+
+			# # 207
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/207/data/target_adjusted.png"
+
+			# # 209
+			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/209/data/209_cam_adjusted.png"
+
 		obs_img_num_list = np.random.choice(len(frames), obj_img_size)
 		delta_rotation_list = np.random.uniform(-args.delta_rot_range_start, args.delta_rot_range_start, size= (obj_img_size,pose_init_size,3))
 		delta_translation_list = np.random.uniform(-args.delta_trans_range_start, args.delta_trans_range_start, size= (obj_img_size,pose_init_size,3))
@@ -1180,6 +1403,11 @@ def run_exp(args):
 				print("*************************************")
 				print(f"IDX: {trial_idx}")
 
+				# TODO: seems like issue with setting pose_init_size=1 lies here! this snippet skips all trials except
+				#  args.exp_idx_choice! That's why for all given images, only one trial is executed if that
+				#  value != none in the config file!
+				#  Actually the behavior we wan but weird, instead we specify pose_init_size = 1 and exp_idx_choice =
+				#  None in the config file
 				if args.exp_idx_choice is not None:
 					if args.exp_idx_choice != trial_idx:
 						trial_idx += 1
@@ -1200,12 +1428,12 @@ def run_exp(args):
 				print(f'delta_ty: {args.delta_ty}')
 				print(f'delta_tz: {args.delta_tz}')
 
-				if args.dataset_name == "nerf_synthetic":
-					args.target_filename = os.path.join(scenes_nerf[args.scene]["data_dir"],
-														frames[obs_img_num]['file_path'] + '.png')
-				else:
-					args.target_filename = os.path.join(scenes_nerf[args.scene]["data_dir"],
-														frames[obs_img_num]['file_path'])
+				# if args.dataset_name == "nerf_synthetic":
+				# 	args.target_filename = os.path.join(scenes_nerf[args.scene]["data_dir"],
+				# 										frames[obs_img_num]['file_path'] + '.png')
+				# else:
+				# 	args.target_filename = os.path.join(scenes_nerf[args.scene]["data_dir"],
+				# 										frames[obs_img_num]['file_path'])
 
 				error_rotation, error_translation, meta_optimization = main(args)
 
@@ -1234,6 +1462,7 @@ def run_exp(args):
 					# Raw pose info
 					"gt_pose": meta_optimization["transform_matrix_gt"].tolist(),
 					"start_pose": meta_optimization["transform_matrix_start_pose"].tolist(),
+					"pred_pose": meta_optimization["transform_matrix_best"].tolist(),
 
 					# Single experiment log (will be override if multiple exps)
 					"log": meta_optimization["log"],
