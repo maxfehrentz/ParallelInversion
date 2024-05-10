@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 # Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
 #
@@ -43,6 +42,7 @@ def config_parser():
 
 	parser.add_argument('--config', is_config_file=True,  type=yaml.safe_load,
 						help='config file path')
+	parser.add_argument('--targets_json_path', type=str, default=None, help='Path to the JSON file that contains targets')
 	parser.add_argument("--mode", default="", const="nerf", nargs="?", choices=["nerf"],
 						help="Only support nerf")
 	parser.add_argument("--network", default="",
@@ -59,7 +59,7 @@ def config_parser():
 						help="Resolution height of GUI and screenshots.")
 
 	# Identifier
-	parser.add_argument("--dataset_name", default="nerf_synthetic", choices=["nerf_synthetic", "nerf_llff", "MICCAI_hypernet", "MICCAI_mri"],
+	parser.add_argument("--dataset_name", default="nerf_synthetic", choices=["nerf_synthetic", "nerf_llff", "example"],
 						help="set up the dataset name to determine how to convert the final metric.")
 
 	# Model registration
@@ -79,7 +79,6 @@ def config_parser():
 
 	# Target related
 	parser.add_argument("--target_filename", default="", help="set the target view filename")
-	parser.add_argument("--target_json", default="", help="force to read from a new json, otherwise read from the test one")
 
 	# Noise settings
 	parser.add_argument("--noise", type=str, default=None, nargs="*",
@@ -197,16 +196,12 @@ def config_parser():
 						help='enable the GUI')
 	parser.add_argument("--random_seed", type=int,default=-1,
 						help='the random seed')
-	parser.add_argument("--BULK_EXP", action="store_true",
-						help='Run the experiment in bulk')
 	parser.add_argument("--verbose", action="store_true",
 						help='display debug information')
 
 	# Experiment settings
 	parser.add_argument("--exp_idx_choice", type=int, default=None,
 						help='select the exact experiment index to run (mainly for head to head comparison)')
-	parser.add_argument("--START_FROM_NOISY_GT",  action="store_true",
-						help='start from the noisy ground truth (the first camera guess is set by arg.delta_phi and so on)')
 	parser.add_argument("--SAVE_FOLDER", type=str, default="",
 						help='the saving folder (help to organize the results)')
 	parser.add_argument("--eval_mode", default="main", choices=["main", "ablation_rgb_loss"],
@@ -272,47 +267,26 @@ def init_pose_guess(meta_training, meta_optimization, args, start_pose=None):
 		assert meta_optimization["transform_matrix_gt"] is not None, "transform_matrix_gt is not initialized"
 		start_pose = meta_optimization["transform_matrix_gt"]
 		print('Start pose is initialized from the ground truth')
-	else:
-		assert start_pose is not None, "start_pose is not initialized"
 
-		# We have to post-process the start_pose to make it compatible with the format of the training json
-		# The basic idea is to convert the start_pose from OpenCV to NeRF, recenter and rescale
+		# If no start pose was given and we have to initialize from the ground truth, apply noise
+		delta_phi = np.random.uniform(-args.delta_rot_range_start, args.delta_rot_range_start)
+		delta_theta = np.random.uniform(-args.delta_rot_range_start, args.delta_rot_range_start)
+		delta_psi = np.random.uniform(-args.delta_rot_range_start, args.delta_rot_range_start)
+		delta_tx = np.random.uniform(-args.delta_trans_range_start, args.delta_trans_range_start)
+		delta_ty = np.random.uniform(-args.delta_trans_range_start, args.delta_trans_range_start)
+		delta_tz = np.random.uniform(-args.delta_trans_range_start, args.delta_trans_range_start)
 
-		# start_pose is c2w, PLEASE DOUBLE-CHECK
-		start_pose = np.array(start_pose)
-		start_pose = OpenCV2NeRF(start_pose)
-		start_pose[0:3, 3] -= meta_optimization["re_center_offset_train"]
-		start_pose[0:3, 3] *= meta_optimization["scale_ratio_train"]
-		print("Start pose:", start_pose)
+		start_noisy = add_noise_to_transform_matrix(start_pose, delta_phi, delta_theta,
+															   delta_psi, delta_tx, delta_ty, delta_tz)
+		start_pose = start_noisy
+
+	# Note that if we have a start_pose given, we do not apply noise in this step! All following pose guesses are based
+	# 	on this
 
 	if args.only_tx or args.only_ty or args.only_tz:
 		coeff_list = np.linspace(-args.delta_trans_range, args.delta_trans_range, meta_optimization["n_camera_samples"])
 	elif args.only_phi or args.only_theta or args.only_psi:
 		coeff_list = np.linspace(-args.delta_rot_range, args.delta_rot_range, meta_optimization["n_camera_samples"])
-
-	if args.START_FROM_NOISY_GT:
-		print("Start pose is initialized from the noisy ground truth")
-		transform_matrix_noisy = deepcopy(start_pose)
-
-		delta_phi = args.delta_phi
-		delta_theta = args.delta_theta
-		delta_psi = args.delta_psi
-		delta_tx = args.delta_tx
-		delta_ty = args.delta_ty
-		delta_tz = args.delta_tz
-
-
-		# The delta_tx/y/z have the scale of the converted transform matrix (test),
-		# so we need to multiply them by the scale of the original transform matrix
-		# To have a fair comparison with the original dataset, we need to have this
-		delta_tx *= meta_optimization["scale_ratio_test"]
-		delta_ty *= meta_optimization["scale_ratio_test"]
-		delta_tz *= meta_optimization["scale_ratio_test"]
-		print(f"delta translation has been re-scaled by the scale_ratio_test: {meta_optimization['scale_ratio_test']}")
-
-		transform_matrix_noisy = add_noise_to_transform_matrix(transform_matrix_noisy, delta_phi, delta_theta,
-															   delta_psi, delta_tx, delta_ty, delta_tz)
-		start_pose = transform_matrix_noisy
 
 	# Save the start pose
 	meta_optimization["transform_matrix_start_pose"] = start_pose
@@ -321,54 +295,51 @@ def init_pose_guess(meta_training, meta_optimization, args, start_pose=None):
 		# ref_transforms['frames'][idx]['sharpness'] = 0
 		transform_matrix_noisy = deepcopy(start_pose)
 
-		if args.START_FROM_NOISY_GT and idx == 0:
-			pass
-		else:
-			# Default noise
-			delta_phi = 0
-			delta_theta = 0
-			delta_psi = 0
-			delta_tx = 0
-			delta_ty = 0
-			delta_tz = 0
+		# Default noise
+		delta_phi = 0
+		delta_theta = 0
+		delta_psi = 0
+		delta_tx = 0
+		delta_ty = 0
+		delta_tz = 0
 
-			if not args.cam_fixed_guess:
+		if not args.cam_fixed_guess:
 
-				if args.only_phi:
-					delta_phi = coeff_list[idx]
-				elif args.only_theta:
-					delta_theta = coeff_list[idx]
-				elif args.only_psi:
-					delta_psi = coeff_list[idx]
-				elif args.only_tx:
-					delta_tx = coeff_list[idx] * transform_matrix_noisy[0, 0]
-					delta_ty = coeff_list[idx] * transform_matrix_noisy[1, 0]
-					delta_tz = coeff_list[idx] * transform_matrix_noisy[2, 0]
-				elif args.only_ty:
-					delta_tx = coeff_list[idx] * transform_matrix_noisy[0, 1]
-					delta_ty = coeff_list[idx] * transform_matrix_noisy[1, 1]
-					delta_tz = coeff_list[idx] * transform_matrix_noisy[2, 1]
-				elif args.only_tz:
-					delta_tx = coeff_list[idx] * transform_matrix_noisy[0, 2]
-					delta_ty = coeff_list[idx] * transform_matrix_noisy[1, 2]
-					delta_tz = coeff_list[idx] * transform_matrix_noisy[2, 2]
-				else:
-					# For multi-guess
-					delta_phi = np.random.uniform(-args.delta_rot_range, args.delta_rot_range)
-					delta_theta = np.random.uniform(-args.delta_rot_range, args.delta_rot_range)
-					delta_psi = np.random.uniform(-args.delta_rot_range, args.delta_rot_range)
-					delta_tx = np.random.uniform(-args.delta_trans_range, args.delta_trans_range)
-					delta_ty = np.random.uniform(-args.delta_trans_range, args.delta_trans_range)
-					delta_tz = np.random.uniform(-args.delta_trans_range, args.delta_trans_range)
+			if args.only_phi:
+				delta_phi = coeff_list[idx]
+			elif args.only_theta:
+				delta_theta = coeff_list[idx]
+			elif args.only_psi:
+				delta_psi = coeff_list[idx]
+			elif args.only_tx:
+				delta_tx = coeff_list[idx] * transform_matrix_noisy[0, 0]
+				delta_ty = coeff_list[idx] * transform_matrix_noisy[1, 0]
+				delta_tz = coeff_list[idx] * transform_matrix_noisy[2, 0]
+			elif args.only_ty:
+				delta_tx = coeff_list[idx] * transform_matrix_noisy[0, 1]
+				delta_ty = coeff_list[idx] * transform_matrix_noisy[1, 1]
+				delta_tz = coeff_list[idx] * transform_matrix_noisy[2, 1]
+			elif args.only_tz:
+				delta_tx = coeff_list[idx] * transform_matrix_noisy[0, 2]
+				delta_ty = coeff_list[idx] * transform_matrix_noisy[1, 2]
+				delta_tz = coeff_list[idx] * transform_matrix_noisy[2, 2]
 			else:
-				delta_phi = args.delta_phi
-				delta_theta = args.delta_theta
-				delta_psi = args.delta_psi
-				delta_tx = args.delta_tx
-				delta_ty = args.delta_ty
-				delta_tz = args.delta_tz
+				# For multi-guess
+				delta_phi = np.random.uniform(-args.delta_rot_range, args.delta_rot_range)
+				delta_theta = np.random.uniform(-args.delta_rot_range, args.delta_rot_range)
+				delta_psi = np.random.uniform(-args.delta_rot_range, args.delta_rot_range)
+				delta_tx = np.random.uniform(-args.delta_trans_range, args.delta_trans_range)
+				delta_ty = np.random.uniform(-args.delta_trans_range, args.delta_trans_range)
+				delta_tz = np.random.uniform(-args.delta_trans_range, args.delta_trans_range)
+		else:
+			delta_phi = args.delta_phi
+			delta_theta = args.delta_theta
+			delta_psi = args.delta_psi
+			delta_tx = args.delta_tx
+			delta_ty = args.delta_ty
+			delta_tz = args.delta_tz
 
-			transform_matrix_noisy = add_noise_to_transform_matrix(transform_matrix_noisy, delta_phi, delta_theta, delta_psi, delta_tx, delta_ty, delta_tz)
+		transform_matrix_noisy = add_noise_to_transform_matrix(transform_matrix_noisy, delta_phi, delta_theta, delta_psi, delta_tx, delta_ty, delta_tz)
 
 		if args.verbose:
 			print(f"transform_matrix_noisy: {transform_matrix_noisy}")
@@ -391,8 +362,6 @@ def load_basic_info(meta_training, args):
 	"""
 	Load the basic information of the scene by recreating a .json file in python
 	"""
-
-	transform_matrix_gt = None
 
 	with open(meta_training["scene_train"]) as f:
 		ref_transforms = json.load(f)
@@ -433,13 +402,11 @@ def load_basic_info(meta_training, args):
 		# By default, n_camera_samples is set up by the user
 		n_camera_samples = args.n_camera_samples
 
-		# Find the GT pose first from the test json file or target_json. Sometimes, we use the same one as in train.
-		if args.target_json:
-			with open(args.target_json) as f:
-				test_transforms = json.load(f)
-		else:
-			with open(meta_training["scene_test"]) as f:
-				test_transforms = json.load(f)
+		# TODO: everything that follows in this method that modifies the gt pose seems irrelevant as we overwrite it directly with
+		#	our own anyhow
+
+		with open(meta_training["scene_test"]) as f:
+			test_transforms = json.load(f)
 
 		if 'scale_ratio' in test_transforms:
 			scale_ratio_test = test_transforms['scale_ratio']
@@ -455,6 +422,11 @@ def load_basic_info(meta_training, args):
 				# M_c2w
 				transform_matrix_gt = test_transforms['frames'][idx]['transform_matrix']
 				transform_matrix_gt = np.array(transform_matrix_gt)
+
+				if transform_matrix_gt is None:
+					# TODO: this is what the original Parallel Inversion code used to do, should probably be removed
+					transform_matrix_gt = test_transforms['frames'][idx]['transform_matrix']
+					transform_matrix_gt = np.array(transform_matrix_gt)
 
 				# transform_matrix_gt has to be adjusted if scale/re_center_offset is different between train and test
 				# It should be converted to the same scale as the train
@@ -472,160 +444,7 @@ def load_basic_info(meta_training, args):
 
 		print(f"type of transform_matrix_get is {type(transform_matrix_gt)}")
 
-
-		# assert transform_matrix_gt is not None, "No GT pose found"
-
-		# TODO: remove that later, just using a hardcoded transform_matrix for images with unknown target pose
-		#  because PI relies on it to create guesses
-
-		# # for 003, gt
-		# transform_matrix_gt = np.array(
-		# 	[
-		# 		[
-		# 			0.726448886334637,
-		# 			0.6491976786647358,
-		# 			-0.22542047280467714,
-		# 			-0.6747694501005268
-		# 		],
-		# 		[
-		# 			0.2676034000417436,
-		# 			0.034899209047931784,
-		# 			0.9628969132227642,
-		# 			-0.7162451691996023
-		# 		],
-		# 		[
-		# 			0.632977437061752,
-		# 			-0.7598186752272856,
-		# 			-0.14837501456306088,
-		# 			0.35476425101161296
-		# 		],
-		# 		[
-		# 			0.0,
-		# 			0.0,
-		# 			0.0,
-		# 			1.0
-		# 		]
-		# 	]
-		# )
-
-		# 065 gt
-		transform_matrix_gt = np.array(
-			[
-				[
-					0.9399469149617992,
-					0.19982986593439278,
-					-0.2767089115558787,
-					-0.15420574880826937
-				],
-				[
-					0.34068074043063845,
-					-0.499650487294187,
-					0.7964207579202802,
-					-0.8379691002231562
-				],
-				[
-					0.020890910785038186,
-					-0.8428626312913181,
-					-0.5377231207780148,
-					0.9153994598405331
-				],
-				[
-					0.0,
-					0.0,
-					0.0,
-					1.0
-				]
-			]
-		)
-
-		# # 089 gt
-		# transform_matrix_gt = np.array(
-		# 	[
-		# 		[
-		# 			0.8136978457276838,
-		# 			-0.5348531646711241,
-		# 			0.22765743585354245,
-		# 			-0.08019269796579342
-		# 		],
-		# 		[
-		# 			-0.4296589561056278,
-		# 			-0.8171872221656526,
-		# 			-0.3841851446469611,
-		# 			0.5197253281829308
-		# 		],
-		# 		[
-		# 			0.39152138804457226,
-		# 			0.21479556832129382,
-		# 			-0.8947479346347685,
-		# 			0.20128611958752296
-		# 		],
-		# 		[
-		# 			0.0,
-		# 			0.0,
-		# 			0.0,
-		# 			1.0
-		# 		]
-		# 	]
-		# )
-
-		# # 207, gt
-		# transform_matrix_gt = np.array(
-		# 	[
-		# 		[
-		# 			-0.3549699541387402,
-		# 			-0.07159674620344393,
-		# 			0.9321320923516262,
-		# 			0.6726487778226686
-		# 		],
-		# 		[
-		# 			0.7689591201128719,
-		# 			0.5447001255994338,
-		# 			0.3346694559818677,
-		# 			-0.02319882135521603
-		# 		],
-		# 		[
-		# 			-0.5316937118811721,
-		# 			0.8355690750051975,
-		# 			-0.13829720763985212,
-		# 			0.015853566135062502
-		# 		],
-		# 		[
-		# 			0.0,
-		# 			0.0,
-		# 			0.0,
-		# 			1.0
-		# 		]
-		# 	]
-		# )
-
-	# 	# for 209, gt
-	# 	transform_matrix_gt = np.array([
-	# 	[
-	# 		-0.7618298303116643,
-	# 		-0.39182607651264706,
-	# 		-0.5158368302205709,
-	# 		-1.5481917902008835
-	# 	],
-	# 	[
-	# 		0.12367844122531027,
-	# 		0.6936872978963645,
-	# 		-0.7095784494425672,
-	# 		1.9914301860358865
-	# 	],
-	# 	[
-	# 		0.6358607967341424,
-	# 		-0.6043759248199301,
-	# 		-0.48001123807123086,
-	# 		0.1914350119317437
-	# 	],
-	# 	[
-	# 		0.0,
-	# 		0.0,
-	# 		0.0,
-	# 		1.0
-	# 	]
-	# ])
-
+		assert transform_matrix_gt is not None, "No GT pose found"
 
 		K = None
 
@@ -657,28 +476,6 @@ def load_target_view(meta_optimization, args):
 	meta_optimization["raw_test_img"] = cv2.imread(args.target_filename)[:,:,::-1] # RGB space
 
 	# Load the target view
-
-	# TODO: remove, only for debugging of target image that has very different dimensions than NeRF training data
-	# Load the image
-	image = cv2.imread(args.target_filename)
-	# Define the new size
-	# # Case 3 Real
-	# new_size = (1990, 1990)
-	# # Case 3 St
-	# new_size = (1874, 1874)
-	# Case 207 (and all other mesh data)
-	new_size = (512, 512)
-	# Resize the image
-	resized_image = cv2.resize(image, new_size, interpolation=cv2.INTER_LINEAR)
-	# Split the file path into directory, file name, and extension
-	dir_name, file_name = os.path.split(args.target_filename)
-	file_base, file_extension = os.path.splitext(file_name)
-	# Create a new file name by adding '_resized' before the file extension
-	new_file_name = f"{file_base}_resized{file_extension}"
-	# Create the full path for the new file
-	new_file_path = os.path.join(dir_name, new_file_name)
-	cv2.imwrite(new_file_path, resized_image)
-	args.target_filename = new_file_path
 
 	# We assume the target image has been processed to get the segmented part
 	# Note that we MUST use read_image to get the right format
@@ -860,7 +657,7 @@ def init_training(meta_training, args, load_snapshot=None, WITH_TRAINING=True):
 
 	return testbed
 
-def rendering_screenshot(testbed, cam_view_id, target_image, args, WITH_OBSERVED_BG=True):
+def rendering_screenshot(testbed, cam_view_id, target_image, args, pose_id, WITH_OBSERVED_BG=True):
 
 	# Set camera
 	testbed.set_camera_to_training_view(cam_view_id)
@@ -906,9 +703,13 @@ def rendering_screenshot(testbed, cam_view_id, target_image, args, WITH_OBSERVED
 
 	testbed.background_color = [0.0, 0.0, 0.0, 0.0]
 
-	imageio.imwrite(f'{args.screenshot_dir}/{str(testbed.training_step).zfill(5)}.png', dst)
+	# TODO: find better solution, hack to not overwrite one of the poses
+	if pose_id is not None:
+		imageio.imwrite(f'{args.screenshot_dir}/{pose_id}_{str(testbed.training_step).zfill(5)}.png', dst)
+	else:
+		imageio.imwrite(f'{args.screenshot_dir}/{str(testbed.training_step).zfill(5)}.png', dst)
 
-def main(args):
+def main(args, start_pose=None, gt_pose=None, pose_id=None):
 
 	# Basic settings
 	if args.mode == "":
@@ -997,7 +798,16 @@ def main(args):
 	# Get the basic info from the training json
 	meta_optimization = load_basic_info(meta_training, args)
 
-	init_pose_guess(meta_training, meta_optimization, args)
+	# TODO: find better way to do this, just assuming that when pose_id is given, we are doing a more thorough eval
+	#  that includes poses for each screenshot, therefore logging the poses
+	if pose_id is not None:
+		meta_optimization['pose_log'] = []
+
+	# TODO: dirty hack, gt is set in load_basic info, just overwriting it here
+	if gt_pose is not None:
+		meta_optimization["transform_matrix_gt"] = gt_pose
+
+	init_pose_guess(meta_training, meta_optimization, args, start_pose)
 
 	# Load the target view (may add some noise)
 	target_image = load_target_view(meta_optimization, args)
@@ -1133,7 +943,13 @@ def main(args):
 				# Rendering the scene
 				assert args.screenshot_dir != "", "Please specify the screenshot dir"
 				if (testbed.training_step) % args.n_steps_between_screenshot == 0 or testbed.training_step == 1:
-					rendering_screenshot(testbed, best_view_index, target_image, args)
+					# TODO: find better way to do this, using existence of pose_id as indicator that proper evaluation
+					#  is done with pose logs for the screenshots
+					if pose_id is not None:
+						meta_optimization['pose_log'].append(test_pose.tolist())
+
+					# Create screenshot of current best view
+					rendering_screenshot(testbed, best_view_index, target_image, args, pose_id)
 
 				if meta_optimization["transform_matrix_gt"] is not None:
 					# Calculate the error
@@ -1143,7 +959,7 @@ def main(args):
 					# Save the error for future analysis
 					# time/rotation error/translation error (converted)
 					if (testbed.training_step) % args.n_steps_between_log == 0 or testbed.training_step == 1:
-						meta_optimization["log"].append([float(compute_time), float(error_rotation), float(error_translation/meta_optimization["scale_ratio_train"])])
+						meta_optimization["log"].append([float(compute_time), float(error_rotation), float(error_translation/meta_optimization["scale_ratio_train"]), test_pose])
 
 					print(f'Rotation error: {error_rotation} degree')
 					print(
@@ -1164,11 +980,11 @@ def main(args):
 			if testbed.training_step >= args.n_steps_pose_optimization or \
 				(testbed.training_step<args.n_steps_pose_optimization and testbed.shall_train is False and args.BULK_EXP):
 
-				# Check if screenshot is saved => create gif
-				if args.screenshot_dir and os.path.exists(args.screenshot_dir):
-					# Create gif
-					print('Creating gif...')
-					create_gif(args.screenshot_dir, time_acc)
+				# # Check if screenshot is saved => create gif
+				# if args.screenshot_dir and os.path.exists(args.screenshot_dir):
+				# 	# Create gif
+				# 	print('Creating gif...')
+				# 	create_gif(args.screenshot_dir, time_acc)
 
 				# Only display once
 				if DISPLAY_FLAG:
@@ -1225,11 +1041,9 @@ def main(args):
 						print(f'Translation error: {error_translation}/converted({error_translation/meta_optimization["scale_ratio_train"]})')
 
 						# Currently, we only support these two exps
-						if args.dataset_name == "nerf_synthetic" or args.dataset_name == "nerf_llff" or args.dataset_name == "MICCAI_hypernet" or args.dataset_name == "MICCAI_mri":
-
-							if args.BULK_EXP:
-								# Return error_rotation, error_translation (converted) and meta_optimization
-								return error_rotation, error_translation/meta_optimization["scale_ratio_train"], meta_optimization
+						if args.dataset_name == "example":
+							# Return error_rotation, error_translation (converted) and meta_optimization
+							return error_rotation, error_translation/meta_optimization["scale_ratio_train"], meta_optimization
 
 					DISPLAY_FLAG = False
 
@@ -1314,189 +1128,90 @@ def main(args):
 
 			end_time_others = time.time() - start_time_others
 
-def run_exp(args):
-	"""
-	Experiment
-	"""
 
+def run_single(args, pose_id, target_pose, init_pose):
 	if args.random_seed != -1:
 		np.random.seed(args.random_seed)
 
-	# Multiple exps
+	print("*************************************")
+	print(f"Target: {args.target_filename}")
 
-	# Enable GUI
-	# args.GUI_ENABLED = False
+	if target_pose is not None:
+		target_pose = np.array(target_pose)
 
-	if args.dataset_name == "nerf_synthetic" or args.dataset_name == "nerf_llff" or args.dataset_name == "MICCAI_hypernet" or args.dataset_name == "MICCAI_mri":
+	if init_pose is not None:
+		init_pose = np.array(init_pose)
 
-		# Use the default target_json instead
-		args.target_json = ""
+	error_rotation, error_translation, meta_optimization = main(
+		args,
+		start_pose=init_pose,
+		gt_pose=target_pose,
+		pose_id=pose_id
+	)
 
-		with open(os.path.join(scenes_nerf[args.scene]["data_dir"], scenes_nerf[args.scene]["dataset_test"]),
-				  'r') as fp:
-			meta = json.load(fp)
-		frames = meta['frames']
+	out = {
+		# Raw result
+		"error_rotation": float(error_rotation),
+		"error_translation": float(error_translation),
 
-		# Save record for further analysis
-		record = {
-			"trial": [],
+		# Target image info
+		"obs_img_path": args.target_filename,
 
-			# Noise info
-			"delta_rot_range_start": float(args.delta_rot_range_start),
-			"delta_trans_range_start": float(args.delta_trans_range_start),
-		}
+		# Raw pose info
+		"gt_pose": meta_optimization["transform_matrix_gt"].tolist(),
+		"start_pose": meta_optimization["transform_matrix_start_pose"].tolist(),
+		"pred_pose": meta_optimization["transform_matrix_best"].tolist(),
+		"pose_log": meta_optimization["pose_log"],
+	}
 
-		# We will have 5 test images for each model, 5 different start poses for each
-		# Initialize all the parameters at the very beginning so they remain the same for all exps
-		obj_img_size = 5
-		pose_init_size = 5
+	return out
 
-		# TODO: remove later, only for debugging, interested in 1 test image only
-		if args.dataset_name == "MICCAI_hypernet" or args.dataset_name == "MICCAI_mri":
-			obj_img_size = 1
-			pose_init_size = 1
 
-			# # Image from NeRF training set
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/images/0005.jpg"
+def run_eval(args):
+	# Load the JSON file
+	with open(args.targets_json_path, 'r') as f:
+		data = json.load(f)
 
-			# Image not from NeRF training set with different resolution, aspect ratio, and slightly different appearance
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/vrs_nazim/100/400_output_mr.png"
+	# Extract the targets
+	targets = data['targets']
 
-			# From training set but light appearance
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/appearance/0005_light.jpg"
+	# Save record for further analysis
+	record = {'results': []}
 
-			# From training but dark appearance
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/appearance/0005_dark.jpg"
+	# Iterate through the targets
+	for pose_id, target in enumerate(targets):
+		# Extract the target pose and target image path
+		target_pose = target['target_pose_ngp']
+		target_img_path = target['target_img_path']
 
-			# From training but cropped
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/cropped/0005.jpg"
+		# Note that the init pose is optional, can also let Parallel Inversion create a randomized start pose
+		# The benefit of having our own though is that we can create it with pyvista where we know the metrics, whereas
+		#  a unit in the instant-ngp/Parallel Inversion environment is meaningless after scaling
+		init_pose = target['init_pose_ngp']
 
-			# From training but occluded
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/nerf_data/VR/MRA/messed_up_images/occluded/0005_black_rect.jpg"
-		
-			# # 003
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/003/data/target_adjusted.png"
+		# Overwrite the target file in args
+		args.target_filename = target_img_path
 
-			# 065
-			args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/065/data/065_cam_adjusted.png"
+		out = run_single(args, pose_id, target_pose, init_pose)
 
-			# # 089
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/089/data/target_adjusted.png"
+		record['results'].append(out)
 
-			# # 207
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/207/data/target_adjusted.png"
-
-			# # 209
-			# args.target_filename = "/home/maximilian_fehrentz/Documents/MICCAI/209/data/209_cam_adjusted.png"
-
-		obs_img_num_list = np.random.choice(len(frames), obj_img_size)
-		delta_rotation_list = np.random.uniform(-args.delta_rot_range_start, args.delta_rot_range_start, size= (obj_img_size,pose_init_size,3))
-		delta_translation_list = np.random.uniform(-args.delta_trans_range_start, args.delta_trans_range_start, size= (obj_img_size,pose_init_size,3))
-
-		error_rotation_list = []
-		error_translation_list = []
-
-		trial_idx = 0
-
-		for i, obs_img_num in enumerate(obs_img_num_list):
-			for j in range(pose_init_size):
-				print("*************************************")
-				print(f"IDX: {trial_idx}")
-
-				# TODO: seems like issue with setting pose_init_size=1 lies here! this snippet skips all trials except
-				#  args.exp_idx_choice! That's why for all given images, only one trial is executed if that
-				#  value != none in the config file!
-				#  Actually the behavior we wan but weird, instead we specify pose_init_size = 1 and exp_idx_choice =
-				#  None in the config file
-				if args.exp_idx_choice is not None:
-					if args.exp_idx_choice != trial_idx:
-						trial_idx += 1
-						continue
-
-				# Generate random pose
-				args.delta_phi = delta_rotation_list[i,j,0]
-				args.delta_theta = delta_rotation_list[i,j,1]
-				args.delta_psi = delta_rotation_list[i,j,2]
-				args.delta_tx = delta_translation_list[i,j,0]
-				args.delta_ty = delta_translation_list[i,j,1]
-				args.delta_tz = delta_translation_list[i,j,2]
-
-				print(f'delta_phi: {args.delta_phi}')
-				print(f'delta_theta: {args.delta_theta}')
-				print(f'delta_psi: {args.delta_psi}')
-				print(f'delta_tx: {args.delta_tx}')
-				print(f'delta_ty: {args.delta_ty}')
-				print(f'delta_tz: {args.delta_tz}')
-
-				# if args.dataset_name == "nerf_synthetic":
-				# 	args.target_filename = os.path.join(scenes_nerf[args.scene]["data_dir"],
-				# 										frames[obs_img_num]['file_path'] + '.png')
-				# else:
-				# 	args.target_filename = os.path.join(scenes_nerf[args.scene]["data_dir"],
-				# 										frames[obs_img_num]['file_path'])
-
-				error_rotation, error_translation, meta_optimization = main(args)
-
-				error_rotation_list.append(error_rotation)
-				error_translation_list.append(error_translation)
-
-				out = {
-					"trial": trial_idx,
-
-					# Raw result
-					"error_rotation": float(error_rotation),
-					"error_translation": float(error_translation),
-
-					# Start pose disturbance
-					"delta_phi": args.delta_phi,
-					"delta_theta": args.delta_theta,
-					"delta_psi": args.delta_psi,
-					"delta_tx": args.delta_tx,
-					"delta_ty": args.delta_ty,
-					"delta_tz": args.delta_tz,
-
-					# Target image info
-					"obs_img_num": int(obs_img_num),
-					"obs_img_path": args.target_filename,
-
-					# Raw pose info
-					"gt_pose": meta_optimization["transform_matrix_gt"].tolist(),
-					"start_pose": meta_optimization["transform_matrix_start_pose"].tolist(),
-					"pred_pose": meta_optimization["transform_matrix_best"].tolist(),
-
-					# Single experiment log (will be override if multiple exps)
-					"log": meta_optimization["log"],
-				}
-
-				record["trial"].append(out)
-
-				trial_idx += 1
-
-		record["5deg"] = float(np.mean(np.array(error_rotation_list) < 5))
-		# Note that the dataset actually does not provide the metric scale yet, so 5cm only means 0.05 units in the dataset
-		record["5cm"] = float(np.mean(np.array(error_translation_list) < 0.05))
-
-		print("5deg: ", record["5deg"])
-		print("5cm: ", record["5cm"])
-
-		# Create exp folder
-		timestr = time.strftime("%Y%m%d-%H%M%S")
-		if args.SAVE_FOLDER:
-			exp_dir = f"exp/{args.SAVE_FOLDER}/{args.dataset_name}_{str(args.scene)}_{timestr}"
-		else:
-			exp_dir = f"exp/{args.dataset_name}_{str(args.scene)}_{timestr}"
-		os.makedirs(exp_dir, exist_ok=True)
-
-		# Save the updated config
-		with open(os.path.join(exp_dir, "config.json"), 'w') as fp:
-			json.dump(vars(args), fp)
-
-		# Save json
-		with open(os.path.join(exp_dir, "record.json"), 'w') as fp:
-			json.dump(record, fp)
-
+	# Create exp folder
+	timestr = time.strftime("%Y%m%d-%H%M%S")
+	if args.SAVE_FOLDER:
+		exp_dir = f"exp/{args.SAVE_FOLDER}/{args.dataset_name}_{str(args.scene)}_{timestr}"
 	else:
-		raise ValueError("The dataset name is not supported.")
+		exp_dir = f"exp/{args.dataset_name}_{str(args.scene)}_{timestr}"
+	os.makedirs(exp_dir, exist_ok=True)
+
+	# Save the updated config
+	with open(os.path.join(exp_dir, "config.json"), 'w') as fp:
+		json.dump(vars(args), fp)
+
+	# Save json
+	with open(os.path.join(exp_dir, "record.json"), 'w') as fp:
+		json.dump(record, fp, indent=4)
+
 
 if __name__ == "__main__":
 
@@ -1506,8 +1221,5 @@ if __name__ == "__main__":
 	if args.random_seed != -1:
 		np.random.seed(args.random_seed)
 
-	if args.BULK_EXP:
-		run_exp(args)
-	else:
-		# Single exp
-		main(args)
+	run_eval(args)
+
